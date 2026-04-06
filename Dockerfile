@@ -55,6 +55,22 @@ WORKDIR /app
 COPY --chown=node:node --from=build /app /app
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
   && mkdir -p /paperclip/plugins \
+  && cd /paperclip/plugins \
+  && npm init -y \
+  && npm install --save \
+    paperclip-plugin-acp \
+    paperclip-plugin-avp \
+    paperclip-plugin-discord \
+    paperclip-plugin-slack \
+    paperclip-plugin-telegram \
+  && git clone --depth 1 https://github.com/tomismeta/paperclip-aperture.git \
+  && git clone --depth 1 https://github.com/webprismdevin/paperclip-plugin-chat.git \
+  && git clone --depth 1 https://github.com/Yesterday-AI/paperclip-plugin-company-wizard.git \
+  && git clone --depth 1 https://github.com/mvanhorn/paperclip-plugin-github-issues.git \
+  && git clone --depth 1 https://github.com/Writbase/paperclip-plugin-writbase.git \
+  && for dir in paperclip-aperture paperclip-plugin-chat paperclip-plugin-company-wizard paperclip-plugin-github-issues paperclip-plugin-writbase; do \
+       if [ -f "$dir/package.json" ]; then cd "$dir" && npm install --omit=dev 2>/dev/null || true && cd ..; fi; \
+     done \
   && chown -R node:node /paperclip
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
