@@ -7,10 +7,11 @@ services:
       POSTGRES_DB: paperclip
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
-      interval: 5s
-      timeout: 10s
-      retries: 30
-      start_period: 30s
+      interval: 10s
+      timeout: 30s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -28,11 +29,12 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-https://paperclip.stratomai.com}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET}"
+    restart: unless-stopped
     volumes:
       - paperclip-data:/paperclip
     depends_on:
       db:
-        condition: service_healthy
+        condition: service_started
 
 volumes:
   pgdata:
