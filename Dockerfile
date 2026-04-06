@@ -14,7 +14,6 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/* \
   && corepack enable
 
-# Modify the existing node user/group to have the specified UID/GID to match host user
 RUN usermod -u $USER_UID --non-unique node \
   && groupmod -g $USER_GID --non-unique node \
   && usermod -g $USER_GID -d /paperclip node
@@ -49,35 +48,13 @@ RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 
-FROM base AS plugins
-WORKDIR /plugins
-RUN npm install --omit=dev \
-  paperclip-plugin-acp \
-  paperclip-plugin-avp \
-  paperclip-plugin-discord \
-  paperclip-plugin-slack \
-  paperclip-plugin-telegram \
-  2>&1 | tail -5
-RUN for repo in \
-  tomismeta/paperclip-aperture \
-  webprismdevin/paperclip-plugin-chat \
-  Yesterday-AI/paperclip-plugin-company-wizard \
-  mvanhorn/paperclip-plugin-github-issues \
-  Writbase/paperclip-plugin-writbase; do \
-    name=$(basename "$repo"); \
-    git clone --depth=1 "https://github.com/$repo.git" "/plugins/$name" 2>/dev/null; \
-    cd "/plugins/$name" && npm install --omit=dev 2>/dev/null; \
-  done
-
 FROM base AS production
 ARG USER_UID=1000
 ARG USER_GID=1000
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
-COPY --chown=node:node --from=plugins /plugins /app/plugins
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
   && mkdir -p /paperclip/plugins \
-  && cp -r /app/plugins/* /paperclip/plugins/ 2>/dev/null || true \
   && chown -R node:node /paperclip
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
