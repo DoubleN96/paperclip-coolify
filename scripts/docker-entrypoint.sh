@@ -26,4 +26,7 @@ if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
 fi
 
+# Fix npm cache permissions (may be left by root-owned build layers)
+rm -rf /paperclip/.npm 2>/dev/null || true
+
 exec gosu node "$@"
