@@ -1,0 +1,77 @@
+name: Sync from upstream paperclipai/paperclip
+
+on:
+  schedule:
+    - cron: '0 4 * * *'   # daily 04:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream + fetch
+        run: |
+          git remote add upstream https://github.com/paperclipai/paperclip.git || true
+          git fetch upstream master
+
+      - name: Detect changes
+        id: diff
+        run: |
+          UPSTREAM=$(git rev-parse upstream/master)
+          CURRENT=$(git rev-parse HEAD)
+          if [ "$UPSTREAM" = "$CURRENT" ]; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+          echo "Upstream: $UPSTREAM"
+          echo "Current : $CURRENT"
+
+      - name: Merge upstream into master (preserve Coolify files)
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          set -e
+          # Save Coolify-specific files
+          mkdir -p /tmp/coolify-keep
+          for F in docker-compose.coolify.yml docker-compose.yml Dockerfile .github/workflows/sync-upstream.yml; do
+            [ -f "$F" ] && cp -f "$F" "/tmp/coolify-keep/$(basename $F)" || true
+          done
+          # Reset to upstream master cleanly
+          git checkout -B master upstream/master
+          # Restore Coolify files on top
+          mkdir -p .github/workflows
+          [ -f /tmp/coolify-keep/sync-upstream.yml ] && cp /tmp/coolify-keep/sync-upstream.yml .github/workflows/sync-upstream.yml
+          [ -f /tmp/coolify-keep/docker-compose.yml ] && cp /tmp/coolify-keep/docker-compose.yml docker-compose.yml
+          [ -f /tmp/coolify-keep/docker-compose.coolify.yml ] && cp /tmp/coolify-keep/docker-compose.coolify.yml docker-compose.coolify.yml
+          [ -f /tmp/coolify-keep/Dockerfile ] && cp /tmp/coolify-keep/Dockerfile Dockerfile
+          git add -A
+          git -c core.editor=true commit --allow-empty -m "chore: sync with upstream paperclipai/paperclip (keep Coolify wrappers)"
+          git push origin master --force-with-lease
+
+  deploy:
+    needs: sync
+    if: needs.sync.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Coolify deployment
+        run: |
+          curl -fsSL -X POST \
+            "https://coolify.stratomai.com/api/v1/deploy?uuid=${{ secrets.COOLIFY_APP_UUID }}" \
+            -H "Authorization: Bearer ${{ secrets.COOLIFY_API_TOKEN }}" \
+            -H "Accept: application/json"
