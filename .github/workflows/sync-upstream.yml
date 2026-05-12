@@ -1,0 +1,102 @@
+name: Sync upstream paperclipai/paperclip
+
+# Daily check for a new stable release on the upstream repo. If found:
+#  1. Reset master to the new upstream tag
+#  2. Re-apply Stratoma's Coolify-specific files (committed via this workflow)
+#  3. Force-push to fork master → Coolify auto-deploys
+#
+# Manually triggerable via Actions tab.
+
+on:
+  schedule:
+    - cron: '0 4 * * *'  # 04:00 UTC daily — after the local health/e2e crons
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork (full history + tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add upstream
+        run: |
+          git remote add upstream https://github.com/paperclipai/paperclip.git
+          git fetch upstream --tags --quiet
+
+      - name: Detect latest STABLE release tag (skip canary/rc)
+        id: latest
+        run: |
+          LATEST=$(git tag -l --sort=-creatordate \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | head -1)
+          echo "tag=$LATEST" >> $GITHUB_OUTPUT
+          echo "Latest stable tag: $LATEST"
+
+      - name: Detect current applied upstream version
+        id: current
+        run: |
+          # Read the version we last applied (stored in .stratoma-applied-version)
+          CURRENT=$(cat .stratoma-applied-version 2>/dev/null || echo "none")
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          echo "Currently applied: $CURRENT"
+
+      - name: Skip if already up to date
+        if: steps.latest.outputs.tag == steps.current.outputs.current
+        run: |
+          echo "Already on ${{ steps.latest.outputs.tag }}, nothing to do."
+          exit 0
+
+      - name: Stash Coolify-specific files
+        if: steps.latest.outputs.tag != steps.current.outputs.current
+        run: |
+          mkdir -p /tmp/coolify
+          cp docker-compose.yml /tmp/coolify/
+          cp docker-compose.coolify.yml /tmp/coolify/
+          cp Dockerfile /tmp/coolify/
+          mkdir -p /tmp/coolify/scripts
+          cp scripts/docker-entrypoint.sh /tmp/coolify/scripts/
+
+      - name: Reset master to upstream tag
+        if: steps.latest.outputs.tag != steps.current.outputs.current
+        run: |
+          git config user.name "Stratoma Auto Update"
+          git config user.email "stratoma-bot@users.noreply.github.com"
+          git checkout master
+          git reset --hard "${{ steps.latest.outputs.tag }}"
+
+      - name: Re-apply Coolify-specific files
+        if: steps.latest.outputs.tag != steps.current.outputs.current
+        run: |
+          cp /tmp/coolify/docker-compose.yml .
+          cp /tmp/coolify/docker-compose.coolify.yml .
+          cp /tmp/coolify/Dockerfile .
+          cp /tmp/coolify/scripts/docker-entrypoint.sh scripts/
+          echo "${{ steps.latest.outputs.tag }}" > .stratoma-applied-version
+
+      - name: Commit + force push
+        if: steps.latest.outputs.tag != steps.current.outputs.current
+        run: |
+          git add -A
+          git commit -m "Auto-sync to upstream ${{ steps.latest.outputs.tag }}
+
+          Stratoma Coolify deployment overrides re-applied on top of the
+          new upstream tag. Coolify will auto-deploy from this push."
+          git push origin master --force
+
+      - name: Notify Telegram on success
+        if: steps.latest.outputs.tag != steps.current.outputs.current && env.TELEGRAM_BOT_TOKEN != ''
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+            -d "chat_id=$TELEGRAM_CHAT_ID" \
+            -d "text=🤖 Paperclip auto-sync: ${{ steps.current.outputs.current }} → ${{ steps.latest.outputs.tag }}%0AForce-pushed to fork master. Coolify is redeploying paperclip.stratomai.com now."
