@@ -49,7 +49,7 @@ jobs:
           set -e
           # Save Coolify-specific files
           mkdir -p /tmp/coolify-keep
-          for F in docker-compose.coolify.yml docker-compose.yml Dockerfile .github/workflows/sync-upstream.yml; do
+          for F in docker-compose.coolify.yml docker-compose.yml Dockerfile scripts/docker-entrypoint.sh .github/workflows/sync-upstream.yml; do
             [ -f "$F" ] && cp -f "$F" "/tmp/coolify-keep/$(basename $F)" || true
           done
           # Reset to upstream master cleanly
@@ -60,6 +60,11 @@ jobs:
           [ -f /tmp/coolify-keep/docker-compose.yml ] && cp /tmp/coolify-keep/docker-compose.yml docker-compose.yml
           [ -f /tmp/coolify-keep/docker-compose.coolify.yml ] && cp /tmp/coolify-keep/docker-compose.coolify.yml docker-compose.coolify.yml
           [ -f /tmp/coolify-keep/Dockerfile ] && cp /tmp/coolify-keep/Dockerfile Dockerfile
+          if [ -f /tmp/coolify-keep/docker-entrypoint.sh ]; then
+            mkdir -p scripts
+            cp /tmp/coolify-keep/docker-entrypoint.sh scripts/docker-entrypoint.sh
+            chmod +x scripts/docker-entrypoint.sh
+          fi
           git add -A
           git -c core.editor=true commit --allow-empty -m "chore: sync with upstream paperclipai/paperclip (keep Coolify wrappers)"
           git push origin master --force-with-lease
