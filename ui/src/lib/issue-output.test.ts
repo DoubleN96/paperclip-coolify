@@ -100,6 +100,7 @@ describe("getIssueOutputs", () => {
     const result = getIssueOutputs([
       makeWorkProduct({ id: "pr-1", type: "pull_request" }),
       makeWorkProduct({ id: "doc-1", type: "document" }),
+      makeWorkProduct({ id: "artifact-1", type: "artifact", provider: "custom", metadata: videoMetadata() }),
     ]);
     expect(result.count).toBe(0);
     expect(result.primary).toBeNull();

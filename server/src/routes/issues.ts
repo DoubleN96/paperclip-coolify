@@ -17,6 +17,7 @@ import {
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
+  attachmentArtifactWorkProductMetadataSchema,
   cancelIssueThreadInteractionSchema,
   companySearchQuerySchema,
   createIssueAttachmentMetadataSchema,
@@ -180,6 +181,26 @@ function applyCreateIssueStatusDefault(req: Request, res: Response, next: () => 
   }
   next();
 }
+
+function buildAttachmentContentPath(attachmentId: string): string {
+  return `/api/attachments/${attachmentId}/content`;
+}
+
+function requiresPaperclipAttachmentMetadata(input: {
+  type?: unknown;
+  provider?: unknown;
+}, fallback?: {
+  type?: string | null;
+  provider?: string | null;
+}) {
+  const type = typeof input.type === "string" ? input.type : fallback?.type ?? null;
+  const provider = typeof input.provider === "string" ? input.provider : fallback?.provider ?? null;
+  return type === "artifact" && provider === "paperclip";
+}
+
+const attachmentArtifactMetadataInputSchema = z.object({
+  attachmentId: z.string().uuid(),
+}).passthrough();
 
 function buildCreateIssueActivityStatusDetails(
   issue: { assigneeAgentId: string | null; status: string },
@@ -1231,6 +1252,38 @@ export function issueRoutes(
       annotationThreadId: input.threadId,
       annotationCommentId: input.commentId,
     }, "failed to wake assignee on document annotation comment"));
+  }
+
+  async function canonicalizePaperclipArtifactMetadata(input: {
+    issue: { id: string; companyId: string };
+    metadata: Record<string, unknown> | null | undefined;
+  }) {
+    const parsed = attachmentArtifactMetadataInputSchema.safeParse(input.metadata);
+    if (!parsed.success) {
+      throw unprocessable("Invalid attachment artifact metadata", {
+        code: "invalid_attachment_artifact_metadata",
+        details: parsed.error.issues,
+      });
+    }
+
+    const attachment = await svc.getAttachmentById(parsed.data.attachmentId);
+    if (!attachment || attachment.companyId !== input.issue.companyId || attachment.issueId !== input.issue.id) {
+      throw unprocessable("Attachment artifact must reference an attachment on the same issue", {
+        code: "invalid_attachment_artifact_metadata",
+        attachmentId: parsed.data.attachmentId,
+      });
+    }
+
+    const contentPath = buildAttachmentContentPath(attachment.id);
+    return attachmentArtifactWorkProductMetadataSchema.parse({
+      attachmentId: attachment.id,
+      contentType: normalizeContentType(attachment.contentType),
+      byteSize: attachment.byteSize,
+      contentPath,
+      openPath: contentPath,
+      downloadPath: `${contentPath}?download=1`,
+      originalFilename: attachment.originalFilename ?? null,
+    });
   }
 
   async function assertIssueEnvironmentSelection(
@@ -3245,10 +3298,17 @@ export function issueRoutes(
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
-    const product = await workProductsSvc.createForIssue(issue.id, issue.companyId, {
+    const createInput = {
       ...req.body,
       projectId: req.body.projectId ?? issue.projectId ?? null,
-    });
+    };
+    if (requiresPaperclipAttachmentMetadata(createInput)) {
+      createInput.metadata = await canonicalizePaperclipArtifactMetadata({
+        issue,
+        metadata: req.body.metadata ?? null,
+      });
+    }
+    const product = await workProductsSvc.createForIssue(issue.id, issue.companyId, createInput);
     if (!product) {
       res.status(422).json({ error: "Invalid work product payload" });
       return;
@@ -3289,7 +3349,19 @@ export function issueRoutes(
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
-    const product = await workProductsSvc.update(id, req.body);
+    const patch = { ...req.body };
+    if (requiresPaperclipAttachmentMetadata(patch, existing)) {
+      if (patch.metadata !== undefined) {
+        patch.metadata = await canonicalizePaperclipArtifactMetadata({
+          issue,
+          metadata: patch.metadata ?? null,
+        });
+      } else if (!requiresPaperclipAttachmentMetadata(existing)) {
+        res.status(422).json({ error: "Attachment-backed artifact metadata is required" });
+        return;
+      }
+    }
+    const product = await workProductsSvc.update(id, patch);
     if (!product) {
       res.status(404).json({ error: "Work product not found" });
       return;

@@ -13,6 +13,11 @@ const mockIssueService = vi.hoisted(() => ({
 const mockCompanyService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
+const mockWorkProductService = vi.hoisted(() => ({
+  createForIssue: vi.fn(),
+  getById: vi.fn(),
+  update: vi.fn(),
+}));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
@@ -97,7 +102,7 @@ function registerRouteMocks() {
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
-    workProductService: () => ({}),
+    workProductService: () => mockWorkProductService,
   }));
 }
 
@@ -144,6 +149,7 @@ async function createApp(storage: StorageService, options?: { companyIds?: strin
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
   ]);
   const app = express();
+  app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = {
       type: "board",
@@ -219,6 +225,9 @@ describe("issue attachment routes", () => {
       id: "company-1",
       attachmentMaxBytes: 1024 * 1024 * 1024,
     });
+    mockWorkProductService.createForIssue.mockReset();
+    mockWorkProductService.getById.mockReset();
+    mockWorkProductService.update.mockReset();
   });
 
   it("accepts zip uploads for issue attachments", async () => {
@@ -428,5 +437,161 @@ describe("issue attachment routes", () => {
 
     expect(res.status).toBe(403);
     expect(storage.getObject).not.toHaveBeenCalled();
+  });
+
+  it("canonicalizes paperclip artifact metadata before creating a work product", async () => {
+    const storage = createStorageService();
+    const issue = {
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+      projectId: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getAttachmentById.mockResolvedValue({
+      ...makeAttachment("video/mp4", "clip.mp4"),
+      id: "22222222-2222-4222-8222-222222222222",
+      byteSize: 6,
+      issueId: issue.id,
+    });
+    mockWorkProductService.createForIssue.mockResolvedValue({
+      id: "work-product-1",
+      issueId: issue.id,
+      companyId: issue.companyId,
+      type: "artifact",
+      provider: "paperclip",
+      title: "Clip",
+      metadata: null,
+    });
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post(`/api/issues/${issue.id}/work-products`)
+      .send({
+        type: "artifact",
+        provider: "paperclip",
+        title: "Clip",
+        metadata: {
+          attachmentId: "22222222-2222-4222-8222-222222222222",
+          contentType: "video/mp4",
+          byteSize: 6,
+          contentPath: "https://evil.example/clip.mp4",
+          openPath: "javascript:alert(1)",
+          downloadPath: "javascript:alert(2)",
+          originalFilename: "clip.mp4",
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockWorkProductService.createForIssue).toHaveBeenCalledWith(
+      issue.id,
+      issue.companyId,
+      expect.objectContaining({
+        type: "artifact",
+        provider: "paperclip",
+        metadata: {
+          attachmentId: "22222222-2222-4222-8222-222222222222",
+          contentType: "video/mp4",
+          byteSize: 6,
+          contentPath: "/api/attachments/22222222-2222-4222-8222-222222222222/content",
+          openPath: "/api/attachments/22222222-2222-4222-8222-222222222222/content",
+          downloadPath: "/api/attachments/22222222-2222-4222-8222-222222222222/content?download=1",
+          originalFilename: "clip.mp4",
+        },
+      }),
+    );
+  });
+
+  it("rejects paperclip artifact metadata that references another issue's attachment", async () => {
+    const storage = createStorageService();
+    const issue = {
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+      projectId: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getAttachmentById.mockResolvedValue({
+      ...makeAttachment("video/mp4", "clip.mp4"),
+      id: "22222222-2222-4222-8222-222222222222",
+      issueId: "different-issue",
+    });
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post(`/api/issues/${issue.id}/work-products`)
+      .send({
+        type: "artifact",
+        provider: "paperclip",
+        title: "Clip",
+        metadata: {
+          attachmentId: "22222222-2222-4222-8222-222222222222",
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("Attachment artifact must reference an attachment on the same issue");
+    expect(mockWorkProductService.createForIssue).not.toHaveBeenCalled();
+  });
+
+  it("canonicalizes paperclip artifact metadata on work product updates", async () => {
+    const storage = createStorageService();
+    const issue = {
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+      projectId: null,
+    };
+    mockWorkProductService.getById.mockResolvedValue({
+      id: "work-product-1",
+      issueId: issue.id,
+      companyId: issue.companyId,
+      type: "artifact",
+      provider: "paperclip",
+      title: "Clip",
+      metadata: null,
+    });
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getAttachmentById.mockResolvedValue({
+      ...makeAttachment("video/webm", "clip.webm"),
+      id: "22222222-2222-4222-8222-222222222222",
+      issueId: issue.id,
+      byteSize: 8,
+    });
+    mockWorkProductService.update.mockResolvedValue({
+      id: "work-product-1",
+      issueId: issue.id,
+      companyId: issue.companyId,
+      type: "artifact",
+      provider: "paperclip",
+      title: "Clip",
+      metadata: null,
+    });
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .patch("/api/work-products/work-product-1")
+      .send({
+        metadata: {
+          attachmentId: "22222222-2222-4222-8222-222222222222",
+          openPath: "javascript:alert(1)",
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockWorkProductService.update).toHaveBeenCalledWith(
+      "work-product-1",
+      expect.objectContaining({
+        metadata: {
+          attachmentId: "22222222-2222-4222-8222-222222222222",
+          contentType: "video/webm",
+          byteSize: 8,
+          contentPath: "/api/attachments/22222222-2222-4222-8222-222222222222/content",
+          openPath: "/api/attachments/22222222-2222-4222-8222-222222222222/content",
+          downloadPath: "/api/attachments/22222222-2222-4222-8222-222222222222/content?download=1",
+          originalFilename: "clip.webm",
+        },
+      }),
+    );
   });
 });
