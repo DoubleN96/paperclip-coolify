@@ -1,0 +1,78 @@
+name: Sync from upstream paperclipai/paperclip
+
+on:
+  schedule:
+    - cron: '0 4 * * *'   # daily 04:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream + fetch
+        run: |
+          git remote add upstream https://github.com/paperclipai/paperclip.git || true
+          git fetch upstream master
+
+      - name: Detect changes
+        id: diff
+        run: |
+          UPSTREAM=$(git rev-parse upstream/master)
+          CURRENT=$(git rev-parse HEAD)
+          if [ "$UPSTREAM" = "$CURRENT" ]; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+          echo "Upstream: $UPSTREAM"
+          echo "Current : $CURRENT"
+
+      - name: Merge upstream into master (preserve Coolify files)
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          set -e
+          # Reset working tree to upstream master
+          git checkout -B master upstream/master
+          # NOTE: the default GITHUB_TOKEN cannot create/update files under
+          # .github/workflows/ (needs the `workflow` scope). Upstream ships its
+          # own workflow files (and adds new ones, e.g. commitperclip-review.yml),
+          # which previously made the push fail entirely. Keep the fork's workflow
+          # set EXACTLY as origin/master so the push never touches that path.
+          rm -rf .github/workflows
+          git checkout origin/master -- .github/workflows
+          # Restore Coolify-specific wrapper files from the fork (origin/master)
+          for F in docker-compose.coolify.yml docker-compose.yml Dockerfile scripts/docker-entrypoint.sh; do
+            git checkout origin/master -- "$F" 2>/dev/null || true
+          done
+          [ -f scripts/docker-entrypoint.sh ] && chmod +x scripts/docker-entrypoint.sh || true
+          git add -A
+          git -c core.editor=true commit --allow-empty -m "chore: sync with upstream paperclipai/paperclip (keep Coolify wrappers)"
+          git push origin master --force-with-lease
+
+  deploy:
+    needs: sync
+    if: needs.sync.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Coolify deployment
+        run: |
+          curl -fsSL -X POST \
+            "https://coolify.stratomai.com/api/v1/deploy?uuid=${{ secrets.COOLIFY_APP_UUID }}" \
+            -H "Authorization: Bearer ${{ secrets.COOLIFY_API_TOKEN }}" \
+            -H "Accept: application/json"
