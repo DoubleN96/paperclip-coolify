@@ -161,7 +161,7 @@
     "acpx": "0.13.1",
     "ajv": "^8.20.0",
     "json-schema-to-ts": "^3.1.1",
-    "opencode-ai": "1.18.17",
+    "opencode-ai": "1.18.27",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1"
   },
